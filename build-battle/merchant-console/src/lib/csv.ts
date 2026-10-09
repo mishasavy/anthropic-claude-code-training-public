@@ -5,9 +5,9 @@ import { formatMoney } from "./money"
 /**
  * CSV export for the payments table.
  *
- * The column set is fixed. Ops has asked for control over it — that is
- * NWP-101 — but today everyone gets every column, including the card
- * last four, whether or not the file is going to a merchant.
+ * Ops chooses the columns and the scope (NWP-101). Column names arrive from
+ * the client, so they are checked against EXPORT_COLUMNS here before anything
+ * is serialized. The card last four is opt-in: files often go to merchants.
  */
 
 export const EXPORT_COLUMNS = [
@@ -24,6 +24,49 @@ export const EXPORT_COLUMNS = [
 ] as const
 
 export type ExportColumn = (typeof EXPORT_COLUMNS)[number]
+
+/** What an export contains when ops makes no choice: everything but last four. */
+export const DEFAULT_EXPORT_COLUMNS: readonly ExportColumn[] =
+  EXPORT_COLUMNS.filter((column) => column !== "last4")
+
+export const EXPORT_SCOPES = ["filtered", "all"] as const
+
+export type ExportScope = (typeof EXPORT_SCOPES)[number]
+
+export type ParsedColumns =
+  | { ok: true; columns: ExportColumn[] }
+  | { ok: false; error: string }
+
+/**
+ * Validate the `columns` query param. Absent means the defaults; present
+ * means a comma-separated list, kept in the requested order. Unknown names
+ * and an empty list are rejected rather than silently dropped.
+ */
+export function parseExportColumns(raw: string | null): ParsedColumns {
+  if (raw === null) return { ok: true, columns: [...DEFAULT_EXPORT_COLUMNS] }
+
+  const requested = raw
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean)
+  if (requested.length === 0) {
+    return { ok: false, error: "Choose at least one column to export." }
+  }
+
+  const unknown = requested.filter(
+    (name) => !EXPORT_COLUMNS.includes(name as ExportColumn),
+  )
+  if (unknown.length > 0) {
+    return { ok: false, error: "One or more requested columns do not exist." }
+  }
+
+  return { ok: true, columns: [...new Set(requested as ExportColumn[])] }
+}
+
+/** Anything other than an explicit "all" exports the current filter. */
+export function parseExportScope(raw: string | null): ExportScope {
+  return raw === "all" ? "all" : "filtered"
+}
 
 function escapeCell(value: string): string {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`
@@ -66,6 +109,11 @@ export function toCsv(
   return [header, ...rows].join("\n")
 }
 
-export function exportFilename(date = new Date()): string {
-  return `payments-${date.toISOString().slice(0, 10)}.csv`
+/**
+ * `payments-disputed-2026-08-13.csv`. The label must come from validated
+ * values (scope, an allowlisted status), never from raw client text.
+ */
+export function exportFilename(date = new Date(), label?: string): string {
+  const day = date.toISOString().slice(0, 10)
+  return label ? `payments-${label}-${day}.csv` : `payments-${day}.csv`
 }
